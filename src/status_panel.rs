@@ -20,8 +20,8 @@ pub struct StatusPanel {
 }
 
 impl StatusPanel {
-    pub fn new(window: Window) -> Result<Self, String> {
-        let gpu = EguiGpu::new(&window, "bytebox status panel device")?;
+    pub fn new(window: Window, device_label: &str) -> Result<Self, String> {
+        let gpu = EguiGpu::new(&window, device_label)?;
         Ok(Self {
             gpu,
             start: std::time::Instant::now(),

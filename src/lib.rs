@@ -6,4 +6,7 @@
 //! unaffected by this library target - the two don't share compiled code
 //! yet, just this same source tree.
 
+pub mod console_log;
+pub mod egui_gpu;
 pub mod renderer;
+pub mod status_panel;

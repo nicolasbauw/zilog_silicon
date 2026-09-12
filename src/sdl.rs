@@ -433,7 +433,8 @@ pub fn run(
         app_log!("Can't set debug window icon: {e}");
     }
     let debug_window_id = debug_window.id();
-    let mut status_panel = crate::status_panel::StatusPanel::new(debug_window)?;
+    let mut status_panel =
+        crate::status_panel::StatusPanel::new(debug_window, "bytebox status panel device")?;
 
     // Console complète (F11), cachée par défaut, sur le même modèle que la
     // fenêtre de statut ci-dessus : elle remplace entièrement la console
