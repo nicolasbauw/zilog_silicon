@@ -1,0 +1,55 @@
+[package]
+name = "bytebox"
+version = "2.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Nicolas BAUW <nbauw@hotmail.com>"]
+description = "Amstrad CPC 6128 emulator"
+
+[[bin]]
+name = "bytebox"
+path = "src/main.rs"
+
+# Réservée aux paquets qui n'ont pas de gestionnaire de dépendances système
+# pour fournir SDL2 (AppImage, MSI Windows) : compile SDL2 depuis les
+# sources et la lie statiquement dans le binaire, qui devient alors
+# autonome vis-à-vis d'elle. À NE PAS activer pour l'AUR/Homebrew : ces
+# deux-là déclarent SDL2 comme dépendance système (`depends_on`/`depends`),
+# dans l'esprit de leurs conventions respectives — la lier statiquement là
+# aussi ne ferait qu'alourdir la compilation sans bénéfice.
+[features]
+static-sdl2 = ["sdl2/bundled", "sdl2/static-link"]
+
+# Icône du .exe compilé (ressource PE, voir windows.rc) — sans elle,
+# l'Explorateur Windows affiche l'icône générique par défaut pour
+# bytebox.exe, avant même de le lancer. No-op sur les autres cibles :
+# safe à garder inconditionnelle plutôt que de la limiter à
+# `[target.'cfg(windows)'.build-dependencies]`.
+[build-dependencies]
+embed-resource = "3"
+
+[dependencies]
+bytebox-core = { path = "../amstrad_cpc/core" }
+zilog_z80 = "1.1.2"
+sdl2 = { version = "0.38.0", features = ["raw-window-handle"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+# M0 a demarre sur la version utilisee par l'exemple officiel
+# raw-window-handle-with-wgpu de la crate sdl2 (wgpu 0.20). M1 la fait
+# suivre celle qu'exige la chaine egui choisie ci-dessous (raw-window-handle
+# reste ^0.6 dans les deux cas, seul point de couplage avec sdl2 : la bascule
+# ne remet donc pas en cause le choix du jalon M0).
+wgpu = "27.0.1"
+pollster = "0.2"
+bytemuck = { version = "1.19", features = ["derive"] }
+# Chaine egui (Plan V2.md, jalon M1) : versions choisies pour que les trois
+# s'accordent exactement (memes egui ^0.33.3) tout en acceptant notre sdl2
+# 0.38.0 deja en place — egui_sdl2_platform, l'autre option citee par le
+# plan, est resté sur sdl2 ^0.38.0/egui ^0.32 mais n'a plus été mis à jour
+# depuis ; egui-sdl2-event suit les sorties d'egui de plus près.
+egui = "0.33.3"
+egui-wgpu = "0.33.3"
+egui-sdl2-event = "1.33.3"
+# Sélecteur de fichier natif (Plan V2.md, jalon M3) : agnostique du système
+# (portail XDG/GTK sous Linux, natif sous Windows et macOS), pas de
+# dépendance graphique supplémentaire à embarquer.
+rfd = "0.17.2"
