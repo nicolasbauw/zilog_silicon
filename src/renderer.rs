@@ -29,9 +29,6 @@ use egui_sdl2_event::EguiSDL2State;
 use sdl2::video::Window;
 use wgpu::util::DeviceExt;
 
-use bytebox_core::config::CrtConfig;
-use bytebox_core::video;
-
 /// Paramètres du shader CRT (`renderer_crt.wgsl`), en mémoire tampon
 /// uniforme GPU : `source_size` (taille de l'image source, en pixels
 /// source — jamais en pixels de sortie, voir le commentaire du shader) ne
@@ -61,10 +58,10 @@ struct CrtParams {
 impl CrtParams {
     /// Complète les réglages réglables (`CrtSettings`) par ce que le shader
     /// doit savoir de la géométrie du tampon source, invariant de l'exécution.
-    fn new(settings: CrtSettings) -> Self {
+    fn new(settings: CrtSettings, screen_width: usize, screen_height: usize, pixels_per_scanline: f32) -> Self {
         Self {
-            source_size: [video::SCREEN_WIDTH as f32, video::SCREEN_HEIGHT as f32],
-            line_height: video::PIXELS_PER_SCANLINE as f32,
+            source_size: [screen_width as f32, screen_height as f32],
+            line_height: pixels_per_scanline,
             mask_cell_px: settings.mask_cell_px,
             mask_min: settings.mask_min,
             mask_strength: settings.mask_strength,
@@ -97,46 +94,6 @@ pub struct CrtSettings {
     pub beam_bloom: f32,
     pub bright_boost: f32,
     pub horizontal_blur: f32,
-}
-
-impl CrtSettings {
-    /// Applique les valeurs enregistrées dans `config.toml` par-dessus les
-    /// valeurs par défaut, champ par champ : une section `[crt]` partielle
-    /// (ou absente) reste donc parfaitement valable.
-    pub fn from_config(crt: &CrtConfig) -> Self {
-        let d = Self::default();
-        Self {
-            mask_cell_px: crt.mask_cell_px.unwrap_or(d.mask_cell_px),
-            mask_min: crt.mask_min.unwrap_or(d.mask_min),
-            mask_strength: crt.mask_strength.unwrap_or(d.mask_strength),
-            scanline_beam: crt.scanline_beam.unwrap_or(d.scanline_beam),
-            scanline_strength: crt.scanline_strength.unwrap_or(d.scanline_strength),
-            beam_bloom: crt.beam_bloom.unwrap_or(d.beam_bloom),
-            bright_boost: crt.bright_boost.unwrap_or(d.bright_boost),
-            horizontal_blur: crt.horizontal_blur.unwrap_or(d.horizontal_blur),
-        }
-    }
-
-    /// Réciproque de [`CrtSettings::from_config`], pour l'enregistrement :
-    /// tous les champs sont renseignés, même ceux restés à leur valeur par
-    /// défaut. Enregistrer, c'est figer un rendu — si une version ultérieure
-    /// change les valeurs par défaut, l'utilisateur doit retrouver le sien.
-    pub fn to_config(self) -> CrtConfig {
-        CrtConfig {
-            mask_cell_px: Some(self.mask_cell_px),
-            mask_min: Some(self.mask_min),
-            mask_strength: Some(self.mask_strength),
-            scanline_beam: Some(self.scanline_beam),
-            scanline_strength: Some(self.scanline_strength),
-            beam_bloom: Some(self.beam_bloom),
-            bright_boost: Some(self.bright_boost),
-            horizontal_blur: Some(self.horizontal_blur),
-            // Hors du champ de `CrtSettings` (voir sa doc) : laissé à la
-            // charge de l'appelant (`config_panel.rs`), qui le renseigne
-            // depuis la case "Enable at startup" avant d'enregistrer.
-            enabled_at_startup: None,
-        }
-    }
 }
 
 impl Default for CrtSettings {
@@ -182,6 +139,9 @@ pub struct Renderer {
     crt_params_bind_group: wgpu::BindGroup,
     crt_enabled: bool,
     crt_settings: CrtSettings,
+    screen_width: usize,
+    screen_height: usize,
+    pixels_per_scanline: f32,
     frame_texture: wgpu::Texture,
     /// Buffer de conversion RGB24 (produit par `video::render`) vers
     /// RGBA8 (seul format que wgpu accepte en texture couleur usuelle) :
@@ -195,7 +155,12 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub fn new(window: Window) -> Result<Self, String> {
+    pub fn new(
+        window: Window,
+        screen_width: usize,
+        screen_height: usize,
+        pixels_per_scanline: f32,
+    ) -> Result<Self, String> {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
             ..Default::default()
@@ -258,8 +223,8 @@ impl Renderer {
         let frame_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("frame texture"),
             size: wgpu::Extent3d {
-                width: video::SCREEN_WIDTH as u32,
-                height: video::SCREEN_HEIGHT as u32,
+                width: screen_width as u32,
+                height: screen_height as u32,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -375,7 +340,7 @@ impl Renderer {
         // identique — `bind_group` est donc réutilisé tel quel), plus un
         // groupe 1 pour la taille de l'image source.
         let crt_settings = CrtSettings::default();
-        let crt_params = CrtParams::new(crt_settings);
+        let crt_params = CrtParams::new(crt_settings, screen_width, screen_height, pixels_per_scanline);
         // COPY_DST : contrairement à `source_size`, ces réglages sont
         // réécrits en direct depuis le panneau F6 (`set_crt_settings`), pas
         // seulement lus une fois à la construction.
@@ -467,8 +432,11 @@ impl Renderer {
             crt_params_bind_group,
             crt_enabled: false,
             crt_settings,
+            screen_width,
+            screen_height,
+            pixels_per_scanline,
             frame_texture,
-            rgba: vec![0u8; video::SCREEN_WIDTH * video::SCREEN_HEIGHT * 4],
+            rgba: vec![0u8; screen_width * screen_height * 4],
             egui_ctx: egui::Context::default(),
             egui_state,
             egui_renderer,
@@ -535,21 +503,26 @@ impl Renderer {
     /// CPC elle-même à chaque `present`.
     pub fn set_crt_settings(&mut self, settings: CrtSettings) {
         self.crt_settings = settings;
-        let params = CrtParams::new(settings);
+        let params = CrtParams::new(
+            settings,
+            self.screen_width,
+            self.screen_height,
+            self.pixels_per_scanline,
+        );
         self.queue
             .write_buffer(&self.crt_params_buffer, 0, bytemuck::bytes_of(&params));
     }
 
-    /// Calcule le rectangle (en pixels physiques) où dessiner l'image
-    /// `SCREEN_WIDTH`x`SCREEN_HEIGHT` à l'échelle maximale qui tient dans la
-    /// surface sans déformer son ratio d'aspect — l'équivalent manuel de ce
-    /// que faisait `Canvas::set_logical_size`.
+    /// Calcule le rectangle (en pixels physiques) où dessiner l'image source
+    /// à l'échelle maximale qui tient dans la surface sans déformer son
+    /// ratio d'aspect — l'équivalent manuel de ce que faisait
+    /// `Canvas::set_logical_size`.
     fn letterboxed_viewport(&self) -> (f32, f32, f32, f32) {
         letterboxed_viewport(
             self.config.width as f32,
             self.config.height as f32,
-            video::SCREEN_WIDTH as f32,
-            video::SCREEN_HEIGHT as f32,
+            self.screen_width as f32,
+            self.screen_height as f32,
         )
     }
 
@@ -560,7 +533,7 @@ impl Renderer {
     /// passe de commandes — `None` reproduit exactement le comportement du
     /// jalon M0 (aucune passe egui, aucun coût).
     pub fn present(&mut self, frame_buffer: &[u8], overlay: Option<&mut dyn FnMut(&egui::Context)>) {
-        debug_assert_eq!(frame_buffer.len(), video::SCREEN_WIDTH * video::SCREEN_HEIGHT * 3);
+        debug_assert_eq!(frame_buffer.len(), self.screen_width * self.screen_height * 3);
         for (rgba, rgb) in self.rgba.chunks_exact_mut(4).zip(frame_buffer.chunks_exact(3)) {
             rgba[0] = rgb[0];
             rgba[1] = rgb[1];
@@ -578,12 +551,12 @@ impl Renderer {
             &self.rgba,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(4 * video::SCREEN_WIDTH as u32),
-                rows_per_image: Some(video::SCREEN_HEIGHT as u32),
+                bytes_per_row: Some(4 * self.screen_width as u32),
+                rows_per_image: Some(self.screen_height as u32),
             },
             wgpu::Extent3d {
-                width: video::SCREEN_WIDTH as u32,
-                height: video::SCREEN_HEIGHT as u32,
+                width: self.screen_width as u32,
+                height: self.screen_height as u32,
                 depth_or_array_layers: 1,
             },
         );

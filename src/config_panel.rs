@@ -515,7 +515,7 @@ impl ConfigPanel {
             // config.toml, juste par des chemins différents (`CrtSettings`
             // pour les curseurs, ce bool à part pour la case).
             if ui.button("Save").clicked() {
-                let mut crt_config = settings.to_config();
+                let mut crt_config = crate::sdl::crt_config_from_settings(*settings);
                 crt_config.enabled_at_startup = Some(*enabled_at_startup);
                 match bytebox_core::config::save_crt_config(&crt_config) {
                     Ok(()) => app_log!("CRT settings saved to config.toml"),

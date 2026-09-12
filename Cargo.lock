@@ -142,24 +142,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
-name = "bytebox"
-version = "2.1.0"
-dependencies = [
- "bytebox-core",
- "bytemuck",
- "egui",
- "egui-sdl2-event",
- "egui-wgpu",
- "embed-resource",
- "image",
- "pollster 0.2.5",
- "rfd",
- "sdl2",
- "wgpu",
- "zilog_z80",
-]
-
-[[package]]
 name = "bytebox-core"
 version = "2.1.0"
 dependencies = [
@@ -2459,6 +2441,24 @@ name = "zeroize"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
+
+[[package]]
+name = "zilog_silicon"
+version = "0.1.0"
+dependencies = [
+ "bytebox-core",
+ "bytemuck",
+ "egui",
+ "egui-sdl2-event",
+ "egui-wgpu",
+ "embed-resource",
+ "image",
+ "pollster 0.2.5",
+ "rfd",
+ "sdl2",
+ "wgpu",
+ "zilog_z80",
+]
 
 [[package]]
 name = "zilog_z80"

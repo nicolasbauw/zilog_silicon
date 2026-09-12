@@ -5,6 +5,7 @@
 
 use bytebox_core::app_log;
 use bytebox_core::autotype::AutoTyper;
+use bytebox_core::config::CrtConfig;
 use crate::config_panel::{ConfigPanel, ZoomChoice};
 use crate::console_log::ConsoleLog;
 use crate::console_panel::QuickCommandBar;
@@ -17,6 +18,45 @@ use sdl2::event::Event;
 use sdl2::mouse::MouseButton;
 use sdl2::pixels::PixelFormatEnum;
 use sdl2::surface::Surface;
+
+/// Applique les valeurs enregistrées dans `config.toml` par-dessus les
+/// valeurs par défaut du shader CRT, champ par champ : une section `[crt]`
+/// partielle (ou absente) reste donc parfaitement valable. `CrtSettings`
+/// elle-même (`renderer.rs`) ne connaît plus `CrtConfig` depuis que ce
+/// fichier a été détaché de bytebox-core pour zilog silicon - cette
+/// conversion vit ici plutôt, avec le reste du code encore spécifique au CPC.
+pub(crate) fn crt_settings_from_config(crt: &CrtConfig) -> CrtSettings {
+    let d = CrtSettings::default();
+    CrtSettings {
+        mask_cell_px: crt.mask_cell_px.unwrap_or(d.mask_cell_px),
+        mask_min: crt.mask_min.unwrap_or(d.mask_min),
+        mask_strength: crt.mask_strength.unwrap_or(d.mask_strength),
+        scanline_beam: crt.scanline_beam.unwrap_or(d.scanline_beam),
+        scanline_strength: crt.scanline_strength.unwrap_or(d.scanline_strength),
+        beam_bloom: crt.beam_bloom.unwrap_or(d.beam_bloom),
+        bright_boost: crt.bright_boost.unwrap_or(d.bright_boost),
+        horizontal_blur: crt.horizontal_blur.unwrap_or(d.horizontal_blur),
+    }
+}
+
+/// Réciproque de [`crt_settings_from_config`], pour l'enregistrement : tous
+/// les champs sont renseignés, même ceux restés à leur valeur par défaut.
+/// `enabled_at_startup` est hors du champ de `CrtSettings` (voir sa doc) :
+/// laissé à la charge de l'appelant (`config_panel.rs`), qui le renseigne
+/// depuis la case "Enable at startup" avant d'enregistrer.
+pub(crate) fn crt_config_from_settings(settings: CrtSettings) -> CrtConfig {
+    CrtConfig {
+        mask_cell_px: Some(settings.mask_cell_px),
+        mask_min: Some(settings.mask_min),
+        mask_strength: Some(settings.mask_strength),
+        scanline_beam: Some(settings.scanline_beam),
+        scanline_strength: Some(settings.scanline_strength),
+        beam_bloom: Some(settings.beam_bloom),
+        bright_boost: Some(settings.bright_boost),
+        horizontal_blur: Some(settings.horizontal_blur),
+        enabled_at_startup: None,
+    }
+}
 
 /// Pose `assets/bytebox_icon.png` comme icône de la fenêtre donnée.
 /// Décodage en pur Rust via la crate `image` (plutôt que la feature
@@ -453,10 +493,15 @@ pub fn run(
     if let Err(e) = set_window_icon(&mut window) {
         app_log!("Can't set window icon: {e}");
     }
-    let mut renderer = Renderer::new(window)?;
+    let mut renderer = Renderer::new(
+        window,
+        video::SCREEN_WIDTH,
+        video::SCREEN_HEIGHT,
+        video::PIXELS_PER_SCANLINE as f32,
+    )?;
     // Une section [crt] dans config.toml (écrite par le bouton du panneau F6)
     // outrepasse les valeurs par défaut du shader, champ par champ.
-    renderer.set_crt_settings(CrtSettings::from_config(machine.crt_config()));
+    renderer.set_crt_settings(crt_settings_from_config(machine.crt_config()));
     if machine.crt_config().enabled_at_startup.unwrap_or(false) {
         renderer.set_crt_enabled(true);
     }

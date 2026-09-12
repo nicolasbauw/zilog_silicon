@@ -1,10 +1,14 @@
 [package]
-name = "bytebox"
-version = "2.1.0"
+name = "zilog_silicon"
+version = "0.1.0"
 edition = "2024"
 license = "MIT"
 authors = ["Nicolas BAUW <nbauw@hotmail.com>"]
-description = "Amstrad CPC 6128 emulator"
+description = "Shared SDL2/wgpu/egui frontend, seeded from bytebox's own frontend"
+
+[lib]
+name = "zilog_silicon"
+path = "src/lib.rs"
 
 [[bin]]
 name = "bytebox"
