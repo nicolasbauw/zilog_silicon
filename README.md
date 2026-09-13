@@ -76,13 +76,12 @@ usual caveat that a two-consumer, single-maintainer, unpublished crate's
 Not published to crates.io - it's an internal shared library for this
 author's own emulators, and publishing would add ceremony (semver
 discipline enforced by the ecosystem, yanking policy...) for zero benefit
-to a crate with two consumers under one roof. Consumers depend on it via a
-git dependency tracking `branch = "master"`:
+to a crate with two consumers under one roof. The GitHub repo itself is
+public (there's nothing sensitive in it - no ROMs, no credentials, just
+generic wgpu/egui/SDL2 plumbing), which keeps this simple: a plain HTTPS
+git dependency, no auth of any kind needed anywhere, including CI.
+Consumers depend on it via a git dependency tracking `branch = "master"`:
 
 ```toml
-zilog_silicon = { git = "ssh://git@github.com/nicolasbauw/zilog_silicon.git", branch = "master" }
+zilog_silicon = { git = "https://github.com/nicolasbauw/zilog_silicon.git", branch = "master" }
 ```
-
-(SSH, not HTTPS: this repo is private, and SSH reuses the git credentials
-already set up for cloning it in the first place - HTTPS would need a
-separate token cargo can authenticate with.)
