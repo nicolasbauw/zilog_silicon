@@ -77,5 +77,9 @@ to a crate with two consumers under one roof. Consumers depend on it via a
 git dependency tracking `branch = "master"`:
 
 ```toml
-zilog_silicon = { git = "https://github.com/nicolasbauw/zilog_silicon.git", branch = "master", default-features = false }
+zilog_silicon = { git = "ssh://git@github.com/nicolasbauw/zilog_silicon.git", branch = "master", default-features = false }
 ```
+
+(SSH, not HTTPS: this repo is private, and SSH reuses the git credentials
+already set up for cloning it in the first place - HTTPS would need a
+separate token cargo can authenticate with.)
