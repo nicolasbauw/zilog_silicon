@@ -102,14 +102,16 @@ impl Default for CrtSettings {
     /// "pixel de sortie" est physiquement minuscule.
     ///
     /// Un `config.toml` qui porte une section `[crt]` les outrepasse, champ
-    /// par champ — voir [`CrtSettings::from_config`].
+    /// par champ — voir `crt_settings_from_config` côté bytebox
+    /// (`amstrad_cpc/bytebox/src/config_panel.rs`), qui applique cette
+    /// logique pour ce type qu'il ne possède plus lui-même.
     fn default() -> Self {
         Self {
             mask_cell_px: 2.0,
             mask_min: 0.6,
             mask_strength: 0.35,
             scanline_beam: 9.0,
-            scanline_strength: 0.6,
+            scanline_strength: 0.5,
             beam_bloom: 0.66,
             bright_boost: 1.6,
             horizontal_blur: 0.65,
