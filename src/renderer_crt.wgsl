@@ -46,12 +46,24 @@
 // bas pour ce que chacun contrôle visuellement.
 struct CrtParams {
     source_size: vec2<f32>,
-    /// Hauteur d'une VRAIE ligne de balayage CPC, en lignes du tampon
-    /// source (`video::PIXELS_PER_SCANLINE`). Vaut 2 : `video::render`
-    /// double chaque scanline verticalement, donc les 600 lignes du tampon
-    /// ne sont que 300 lignes de balayage réelles. Dessiner une scanline par
-    /// ligne de tampon en dessinerait deux fois trop, chacune deux fois trop
-    /// fine — ce qui les rendait presque invisibles quel que soit le réglage.
+    /// Hauteur d'une VRAIE ligne de balayage, en lignes du tampon source.
+    /// Vaut 2 pour le CPC (`video::render` double chaque scanline
+    /// verticalement, donc les 600 lignes du tampon ne sont que 300 lignes
+    /// de balayage réelles) ; dessiner une scanline par ligne de tampon en
+    /// dessinerait deux fois trop, chacune deux fois trop fine — ce qui les
+    /// rendait presque invisibles quel que soit le réglage. Pour le CPC, ces
+    /// `line_height` lignes de tampon sont des doublons exacts, donc
+    /// n'importe laquelle représente correctement la ligne de balayage.
+    /// Mais pour un frontend dont la police est un vrai rendu antialiasé à
+    /// ratio non entier (le TRS-80 utilise 4.5, voir trust-80-core/
+    /// charset.rs), ce n'est plus le cas : chaque ligne du tampon porte un
+    /// détail réellement différent des autres. `sample_line` interpole
+    /// alors en BILINÉAIRE entre les deux lignes de tampon réelles les plus
+    /// proches du centre continu de la ligne de balayage plutôt que de
+    /// n'en lire qu'une seule au hasard - voir son propre commentaire pour
+    /// le détail (et l'historique des deux approches par bandes fixes
+    /// essayées avant, qui perdaient des traits fins/diagonaux ou les
+    /// dédoublaient selon le cas).
     line_height: f32,
     mask_cell_px: f32,
     mask_min: f32,
@@ -175,24 +187,9 @@ fn average_scan_weight(dist_lines: f32, beam: f32, footprint: f32) -> f32 {
     return (a + b + c) / 3.0;
 }
 
-// Couleur de la ligne de balayage CPC `line` (pas la ligne de tampon : voir
-// `line_height`), ré-échantillonnée horizontalement entre ses deux colonnes
-// voisines autour de `cont_x` (position continue, en texels source).
-fn sample_line(cont_x: f32, line: f32) -> vec3<f32> {
-    // Centre du groupe de `line_height` lignes de tampon qui portent cette
-    // ligne de balayage. Elles sont identiques (`video::render` duplique),
-    // donc n'importe laquelle ferait l'affaire — viser le centre garde
-    // l'échantillonnage robuste si le doublage venait à changer.
-    let row = (line + 0.5) * params.line_height;
-
-    // Somme gaussienne centrée sur la position continue du fragment, plutôt
-    // qu'une interpolation entre les deux seuls texels encadrants : c'est ce
-    // qui permet au spot de déborder au-delà de ses voisins immédiats quand
-    // on élargit le faisceau, et donc au réglage d'aller quelque part.
-    // Un plancher sur l'écart-type évite la division par zéro (et le NaN qui
-    // s'ensuivrait) quand le curseur est à fond à gauche ; à cette valeur,
-    // le texel le plus proche emporte déjà tout le poids.
-    let sigma = max(params.horizontal_blur, 0.03);
+// Échantillon horizontal (flou gaussien) d'une ligne de TAMPON exacte
+// (`row`, un index entier + 0.5 - un vrai centre de texel).
+fn sample_row(cont_x: f32, sigma: f32, row: f32) -> vec3<f32> {
     let nearest = floor(cont_x) + 0.5;
     var sum = vec3<f32>(0.0);
     var weight_sum = 0.0;
@@ -207,6 +204,43 @@ fn sample_line(cont_x: f32, line: f32) -> vec3<f32> {
     return sum / weight_sum;
 }
 
+// Échantillon du signal source à sa position CONTINUE réelle (`row_cont`,
+// en lignes de TAMPON - pas en vraies lignes de balayage), par
+// interpolation BILINÉAIRE entre les deux lignes de tampon les plus
+// proches, plus un flou gaussien horizontal continu autour de `cont_x`.
+//
+// PAS quantifié sur la grille des vraies lignes de balayage (`line_height`)
+// - c'est délibéré, voir le commentaire de `fs_main` sur pourquoi le
+// contenu affiché doit rester à pleine résolution native, la modulation de
+// luminosité du balayage étant appliquée À PART, en aval. Trois approches
+// plus anciennes quantifiaient ici même (sur des "lignes de balayage"
+// reconstruites à partir d'un groupe de `line_height` lignes de tampon) et
+// échouaient chacune pour une variante de la même raison - un découpage en
+// bandes à frontières FIXES, sur lequel un trait de glyphe peut tomber à
+// cheval :
+// - un simple échantillon NEAREST d'une seule ligne du groupe, choisie au
+//   hasard (le centre), ratait le contenu porté par les autres lignes du
+//   groupe - les traits fins/diagonaux (jambages du "M", pointe du "A") en
+//   devenaient illisibles ;
+// - MOYENNE puis MAX sur tout le groupe réglaient ce problème mais en
+//   créaient un autre : un trait qui chevauche la frontière entre deux
+//   groupes se retrouvait soit dilué (moyenne, d'où le flou général
+//   observé ensuite), soit dans les deux groupes à la fois (max, donc
+//   dessiné deux fois - le dédoublement observé sur la barre du haut du
+//   "E") ;
+// - même la version bilinéaire précédente de CETTE fonction, qui
+//   interpolait déjà correctement, restait quantifiée sur la grille des
+//   192 vraies lignes de balayage plutôt que sur la résolution native du
+//   tampon (864 lignes pour le TRS-80) - un plancher de flou permanent,
+//   non affecté par AUCUN réglage puisqu'aucun ne contrôle `line_height`.
+fn sample_native(cont_x: f32, row_cont: f32, sigma: f32) -> vec3<f32> {
+    let row0 = floor(row_cont - 0.5);
+    let fy = (row_cont - 0.5) - row0;
+    let a = sample_row(cont_x, sigma, row0 + 0.5);
+    let b = sample_row(cont_x, sigma, row0 + 1.5);
+    return mix(a, b, fy);
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Reconstruction du faisceau, en espace pixel SOURCE (ni le flou
@@ -214,7 +248,24 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // zoom de sortie : x1/x2/x3/plein écran doivent tous montrer le même
     // nombre de bandes, dans les mêmes proportions relatives à l'image).
     let texel = in.uv * params.source_size;
-    // Position verticale en LIGNES DE BALAYAGE CPC réelles, pas en lignes du
+
+    // Contenu affiché : échantillonné à sa résolution NATIVE (voir
+    // `sample_native`), jamais réduit à la grille des vraies lignes de
+    // balayage. La modulation de luminosité du balayage (`scan_factor`
+    // ci-dessous) est un facteur multiplicatif purement géométrique,
+    // appliqué À PART - exactement le même principe que le masque phosphore
+    // plus bas (une modulation en espace de sortie, indépendante du
+    // contenu). Ce découplage est ce qui permet à `scanline_strength = 0`
+    // de restituer une image aussi nette que le rendu source lui-même, quel
+    // que soit `line_height` - avant, contenu ET modulation venaient du
+    // même échantillonnage "par ligne de balayage", ce qui réduisait la
+    // résolution verticale à `line_height:1` dès que le shader CRT était
+    // actif, quel que soit `scanline_strength` : un flou permanent
+    // qu'aucun réglage ne pouvait compenser.
+    let sigma = max(params.horizontal_blur, 0.03);
+    let color_source = sample_native(texel.x, texel.y, sigma);
+
+    // Position verticale en VRAIES lignes de balayage, pas en lignes du
     // tampon (voir `line_height`) : c'est la période à laquelle un vrai tube
     // dessine ses scanlines.
     let line_coord = texel.y / params.line_height;
@@ -223,13 +274,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let footprint = fwidth(line_coord);
     let line0 = floor(line_coord - 0.5);
     let dist0 = (line_coord - 0.5) - line0;
-
-    let c0 = sample_line(texel.x, line0);
-    let c1 = sample_line(texel.x, line0 + 1.0);
-    // Un mélange linéaire non pondéré (sans creux de balayage) sert de plancher
-    // de luminosité : scanline_strength règle l'intensité du seul effet de
-    // bande, indépendamment de GAMMA_IN/OUT ou du reste du pipeline.
-    let color_flat = mix(c0, c1, dist0);
 
     // Largeur du faisceau selon la luminosité locale : sur un vrai tube, un
     // faisceau plus intense est physiquement plus large ("bloom" du spot),
@@ -241,17 +285,23 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // tout mettre à fond et elles restent discrètes". Avec le bloom, les
     // blancs restent blancs sans boost, et l'exposant peut monter beaucoup
     // plus haut là où ça se voit.
-    let luma = dot(color_flat, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let luma = dot(color_source, vec3<f32>(0.2126, 0.7152, 0.0722));
     // Comparé en espace perceptuel plutôt que linéaire : sinon la quasi
     // totalité de l'image (tout sauf les blancs francs) compterait comme
     // "sombre" et le bloom ne servirait presque jamais.
     let brightness = pow(clamp(luma, 0.0, 1.0), 1.0 / GAMMA_OUT);
     let beam = params.scanline_beam * mix(1.0, params.beam_bloom, brightness);
 
+    // `scan_factor` : multiplicateur de luminosité purement géométrique,
+    // pic à 1.0 pile sur une vraie ligne de balayage, creusé entre deux -
+    // voir `scan_weight`. Volontairement NON normalisé (la somme des deux
+    // termes n'a pas à faire 1.0) : c'est cette absence de normalisation
+    // qui creuse la bande sombre du balayage.
     let w0 = average_scan_weight(dist0, beam, footprint);
     let w1 = average_scan_weight(dist0 - 1.0, beam, footprint);
-    let color_scanned = c0 * w0 + c1 * w1;
-    let color = mix(color_flat, color_scanned, params.scanline_strength);
+    let scan_factor = w0 + w1;
+    let color_scanned = color_source * scan_factor;
+    let color = mix(color_source, color_scanned, params.scanline_strength);
 
     // Masque phosphore : triade RVB, en pixels de SORTIE réels (propriété du
     // tube, sans rapport avec la résolution de l'image source) — décalée

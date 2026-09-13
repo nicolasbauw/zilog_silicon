@@ -10,3 +10,4 @@ pub mod console_log;
 pub mod egui_gpu;
 pub mod renderer;
 pub mod status_panel;
+pub mod ui_scale;
