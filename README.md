@@ -36,12 +36,15 @@ they're portable verbatim even to a target this crate itself doesn't support
 (a wasm/web frontend hooks into them through its own `egui_wgpu::CallbackTrait`
 integration instead of this crate's `Renderer` - see trust-80-web).
 
-The bin target (`bytebox`, gated behind the `bytebox-frontend` feature,
-enabled by default) is ByteBox's actual frontend binary, assembled from the
-rest of the files in `src/` (keyboard/config/console panels, the SDL2 event
-loop, audio...). That code is CPC-specific and not exposed through the
-library - a consumer that only wants the shared framework depends on this
-crate with `default-features = false`, exactly as trust-80 does.
+This is a library-only crate: it originally also carried a `bytebox` bin
+target (ByteBox's own frontend binary, assembled from CPC-specific
+keyboard/config/console panels, the SDL2 event loop, audio...), kept here
+temporarily while ByteBox itself still had its own pre-extraction copies of
+the shared modules to compare against. Once ByteBox was migrated to depend
+on this crate directly (like trust-80 already did), that bin - and
+everything only it needed (bytebox-core, image, rfd, zilog_z80, the
+packaging assets/build script) - moved back out, since ByteBox's own repo
+is where a CPC-specific frontend binary belongs.
 
 ## What this crate does *not* provide
 
@@ -77,7 +80,7 @@ to a crate with two consumers under one roof. Consumers depend on it via a
 git dependency tracking `branch = "master"`:
 
 ```toml
-zilog_silicon = { git = "ssh://git@github.com/nicolasbauw/zilog_silicon.git", branch = "master", default-features = false }
+zilog_silicon = { git = "ssh://git@github.com/nicolasbauw/zilog_silicon.git", branch = "master" }
 ```
 
 (SSH, not HTTPS: this repo is private, and SSH reuses the git credentials

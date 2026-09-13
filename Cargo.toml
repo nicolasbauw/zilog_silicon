@@ -10,46 +10,8 @@ description = "Shared SDL2/wgpu/egui frontend, seeded from bytebox's own fronten
 name = "zilog_silicon"
 path = "src/lib.rs"
 
-[[bin]]
-name = "bytebox"
-path = "src/main.rs"
-# The bin is bytebox-specific (bytebox-core, its ROM/config/keyboard-matrix
-# types...); the lib target isn't and shouldn't drag those in for a consumer
-# that only wants the frontend framework - trust-80 depends on this crate
-# with default-features = false for exactly that reason.
-required-features = ["bytebox-frontend"]
-
-# Réservée aux paquets qui n'ont pas de gestionnaire de dépendances système
-# pour fournir SDL2 (AppImage, MSI Windows) : compile SDL2 depuis les
-# sources et la lie statiquement dans le binaire, qui devient alors
-# autonome vis-à-vis d'elle. À NE PAS activer pour l'AUR/Homebrew : ces
-# deux-là déclarent SDL2 comme dépendance système (`depends_on`/`depends`),
-# dans l'esprit de leurs conventions respectives — la lier statiquement là
-# aussi ne ferait qu'alourdir la compilation sans bénéfice.
-[features]
-default = ["bytebox-frontend"]
-# Everything the "bytebox" bin needs that the shared frontend (the lib
-# target: renderer, egui_gpu, console_log, status_panel) doesn't - kept
-# out of a plain `zilog_silicon` dependency so another frontend (trust-80)
-# isn't forced to compile bytebox-core and its own dependency tree
-# (zip/zstd for the ROM installer, image, rfd...) just to reach the parts
-# it actually uses.
-bytebox-frontend = ["dep:bytebox-core", "dep:image", "dep:rfd", "dep:zilog_z80"]
-static-sdl2 = ["sdl2/bundled", "sdl2/static-link"]
-
-# Icône du .exe compilé (ressource PE, voir windows.rc) — sans elle,
-# l'Explorateur Windows affiche l'icône générique par défaut pour
-# bytebox.exe, avant même de le lancer. No-op sur les autres cibles :
-# safe à garder inconditionnelle plutôt que de la limiter à
-# `[target.'cfg(windows)'.build-dependencies]`.
-[build-dependencies]
-embed-resource = "3"
-
 [dependencies]
-bytebox-core = { path = "../amstrad_cpc/core", optional = true }
-zilog_z80 = { version = "1.1.2", optional = true }
 sdl2 = { version = "0.38.0", features = ["raw-window-handle"] }
-image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 # M0 a demarre sur la version utilisee par l'exemple officiel
 # raw-window-handle-with-wgpu de la crate sdl2 (wgpu 0.20). M1 la fait
 # suivre celle qu'exige la chaine egui choisie ci-dessous (raw-window-handle
@@ -66,7 +28,3 @@ bytemuck = { version = "1.19", features = ["derive"] }
 egui = "0.33.3"
 egui-wgpu = "0.33.3"
 egui-sdl2-event = "1.33.3"
-# Sélecteur de fichier natif (Plan V2.md, jalon M3) : agnostique du système
-# (portail XDG/GTK sous Linux, natif sous Windows et macOS), pas de
-# dépendance graphique supplémentaire à embarquer.
-rfd = { version = "0.17.2", optional = true }

@@ -1,5 +1,0 @@
-// Icône embarquée dans le .exe compilé (ressource PE), pas seulement dans
-// l'installeur MSI (bytebox/wix/main.wxs) : sans elle, l'Explorateur
-// Windows affiche l'icône générique par défaut pour bytebox.exe lui-même
-// (avant même de le lancer) — le chemin vu depuis build.rs.
-app_icon ICON "assets/bytebox_icon.ico"
