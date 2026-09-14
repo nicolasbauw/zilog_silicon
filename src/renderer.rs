@@ -58,10 +58,10 @@ struct CrtParams {
 impl CrtParams {
     /// Complète les réglages réglables (`CrtSettings`) par ce que le shader
     /// doit savoir de la géométrie du tampon source, invariant de l'exécution.
-    fn new(settings: CrtSettings, screen_width: usize, screen_height: usize, pixels_per_scanline: f32) -> Self {
+    fn new(settings: CrtSettings, screen_width: usize, screen_height: usize) -> Self {
         Self {
             source_size: [screen_width as f32, screen_height as f32],
-            line_height: pixels_per_scanline,
+            line_height: settings.pixels_per_scanline,
             mask_cell_px: settings.mask_cell_px,
             mask_min: settings.mask_min,
             mask_strength: settings.mask_strength,
@@ -94,6 +94,18 @@ pub struct CrtSettings {
     pub beam_bloom: f32,
     pub bright_boost: f32,
     pub horizontal_blur: f32,
+    /// How many buffer rows make up one real CRT scanline (`line_height`
+    /// in `renderer_crt.wgsl`) - a shader-only tuning knob, not a
+    /// hardware-accuracy setting: displayed content is sampled at full
+    /// native resolution regardless of this value (see the shader's own
+    /// `sample_native`/`scan_factor` split). Used to be a separate
+    /// `Renderer::new` constructor argument, never exposed as an
+    /// adjustable setting - folded into this struct so a consumer's own
+    /// F6-equivalent panel can offer it as a live slider like the other
+    /// seven fields, alongside a theoretically-accurate marker value for
+    /// whichever video standard it targets (NTSC/PAL - see each
+    /// consumer's own tuned defaults for the actual derivation).
+    pub pixels_per_scanline: f32,
 }
 
 impl Default for CrtSettings {
@@ -115,6 +127,10 @@ impl Default for CrtSettings {
             beam_bloom: 0.66,
             bright_boost: 1.6,
             horizontal_blur: 0.65,
+            // Neutral placeholder - every real consumer overrides this via
+            // its own tuned defaults immediately after construction, using
+            // a value actually derived for its own machine/video standard.
+            pixels_per_scanline: 2.0,
         }
     }
 }
@@ -143,7 +159,6 @@ pub struct Renderer {
     crt_settings: CrtSettings,
     screen_width: usize,
     screen_height: usize,
-    pixels_per_scanline: f32,
     frame_texture: wgpu::Texture,
     /// Buffer de conversion RGB24 (produit par `video::render`) vers
     /// RGBA8 (seul format que wgpu accepte en texture couleur usuelle) :
@@ -157,12 +172,7 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub fn new(
-        window: Window,
-        screen_width: usize,
-        screen_height: usize,
-        pixels_per_scanline: f32,
-    ) -> Result<Self, String> {
+    pub fn new(window: Window, screen_width: usize, screen_height: usize) -> Result<Self, String> {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
             ..Default::default()
@@ -342,7 +352,7 @@ impl Renderer {
         // identique — `bind_group` est donc réutilisé tel quel), plus un
         // groupe 1 pour la taille de l'image source.
         let crt_settings = CrtSettings::default();
-        let crt_params = CrtParams::new(crt_settings, screen_width, screen_height, pixels_per_scanline);
+        let crt_params = CrtParams::new(crt_settings, screen_width, screen_height);
         // COPY_DST : contrairement à `source_size`, ces réglages sont
         // réécrits en direct depuis le panneau F6 (`set_crt_settings`), pas
         // seulement lus une fois à la construction.
@@ -436,7 +446,6 @@ impl Renderer {
             crt_settings,
             screen_width,
             screen_height,
-            pixels_per_scanline,
             frame_texture,
             rgba: vec![0u8; screen_width * screen_height * 4],
             egui_ctx: egui::Context::default(),
@@ -505,12 +514,7 @@ impl Renderer {
     /// CPC elle-même à chaque `present`.
     pub fn set_crt_settings(&mut self, settings: CrtSettings) {
         self.crt_settings = settings;
-        let params = CrtParams::new(
-            settings,
-            self.screen_width,
-            self.screen_height,
-            self.pixels_per_scanline,
-        );
+        let params = CrtParams::new(settings, self.screen_width, self.screen_height);
         self.queue
             .write_buffer(&self.crt_params_buffer, 0, bytemuck::bytes_of(&params));
     }
