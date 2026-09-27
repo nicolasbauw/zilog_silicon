@@ -12,8 +12,8 @@ maintain two copies of that plumbing, it lives here once.
 The library target (`zilog_silicon::*`) is deliberately narrow - just the
 parts of a frontend that don't know or care what machine is being emulated:
 
-- **`renderer`** - a wgpu render pipeline that letterboxes an RGB24
-  framebuffer of arbitrary size into whatever the actual window size is, with
+- **`renderer`** - a wgpu render pipeline that letterboxes an RGBA8
+  framebuffer (uploaded as is, no conversion pass) of arbitrary size into whatever the actual window size is, with
   an optional CRT shader (scanlines + aperture mask) on top. `CrtSettings` is
   a plain data struct (mask/scanline/blur parameters); this crate has no
   opinion on where those values come from or where they're saved.

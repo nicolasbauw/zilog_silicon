@@ -1,8 +1,8 @@
 //! Pipeline de rendu wgpu de la fenêtre principale (Plan V2.md, jalon M0).
 //!
 //! Remplace l'ancien `Canvas`/texture streaming logiciel de SDL2 : la
-//! sortie de `video::render` (un buffer RGB24 `SCREEN_WIDTH`x`SCREEN_HEIGHT`,
-//! inchangée) est uploadée dans une texture, puis dessinée par un quad
+//! sortie du cœur (un buffer RGBA8 `SCREEN_WIDTH`x`SCREEN_HEIGHT`, voir
+//! `present_rgba`) est uploadée dans une texture, puis dessinée par un quad
 //! plein écran dans un viewport calculé à la main pour reproduire le
 //! letterboxing/pillarboxing que `Canvas::set_logical_size` offrait
 //! gratuitement — ce mécanisme n'a pas d'équivalent côté wgpu.
@@ -15,7 +15,7 @@
 //! principale (console F11, futurs panneaux F6/F7) : contrairement à la
 //! fenêtre de statut (`status_panel.rs`, M1), c'est la MÊME fenêtre/surface
 //! que le rendu CPC, donc le même contexte wgpu — pas de second GPU à créer,
-//! juste une seconde passe de rendu par-dessus la première (`present`, en
+//! juste une seconde passe de rendu par-dessus la première (`present_rgba`, en
 //! `LoadOp::Load` plutôt que `Clear`, pour ne pas effacer l'image CPC déjà
 //! dessinée).
 //!
@@ -160,10 +160,6 @@ pub struct Renderer {
     screen_width: usize,
     screen_height: usize,
     frame_texture: wgpu::Texture,
-    /// Buffer de conversion RGB24 (produit par `video::render`) vers
-    /// RGBA8 (seul format que wgpu accepte en texture couleur usuelle) :
-    /// alloué une fois, réutilisé à chaque trame.
-    rgba: Vec<u8>,
     egui_ctx: egui::Context,
     egui_state: EguiSDL2State,
     egui_renderer: egui_wgpu::Renderer,
@@ -447,7 +443,6 @@ impl Renderer {
             screen_width,
             screen_height,
             frame_texture,
-            rgba: vec![0u8; screen_width * screen_height * 4],
             egui_ctx: egui::Context::default(),
             egui_state,
             egui_renderer,
@@ -511,7 +506,7 @@ impl Renderer {
     /// Réécrit les réglages du shader CRT, immédiatement effectifs (le
     /// panneau F6 appelle ceci à chaque trame où il est ouvert). Coût
     /// négligeable : `write_buffer` sur 32 octets, comme la texture de trame
-    /// CPC elle-même à chaque `present`.
+    /// CPC elle-même à chaque `present_rgba`.
     pub fn set_crt_settings(&mut self, settings: CrtSettings) {
         self.crt_settings = settings;
         let params = CrtParams::new(settings, self.screen_width, self.screen_height);
@@ -532,20 +527,18 @@ impl Renderer {
         )
     }
 
-    /// Envoie une trame (buffer RGB24 de `video::render`) à l'écran.
+    /// Envoie une trame à l'écran : un buffer RGBA8 (4 octets par pixel,
+    /// alpha ignoré), le format de la texture — envoyé tel quel, sans
+    /// passe de conversion ni copie intermédiaire. Les cœurs produisent
+    /// directement ce format (`video::render_rgba` côté bytebox,
+    /// `video::render_row_rgba` côté trust-80).
     ///
     /// `overlay`, s'il est fourni, construit une interface egui (console
     /// F11, futurs panneaux) dessinée par-dessus l'image CPC dans la même
     /// passe de commandes — `None` reproduit exactement le comportement du
     /// jalon M0 (aucune passe egui, aucun coût).
-    pub fn present(&mut self, frame_buffer: &[u8], overlay: Option<&mut dyn FnMut(&egui::Context)>) {
-        debug_assert_eq!(frame_buffer.len(), self.screen_width * self.screen_height * 3);
-        for (rgba, rgb) in self.rgba.chunks_exact_mut(4).zip(frame_buffer.chunks_exact(3)) {
-            rgba[0] = rgb[0];
-            rgba[1] = rgb[1];
-            rgba[2] = rgb[2];
-            rgba[3] = 255;
-        }
+    pub fn present_rgba(&mut self, frame_buffer: &[u8], overlay: Option<&mut dyn FnMut(&egui::Context)>) {
+        debug_assert_eq!(frame_buffer.len(), self.screen_width * self.screen_height * 4);
 
         self.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
@@ -554,7 +547,7 @@ impl Renderer {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &self.rgba,
+            frame_buffer,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(4 * self.screen_width as u32),
