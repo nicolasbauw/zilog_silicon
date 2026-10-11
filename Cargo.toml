@@ -28,3 +28,6 @@ bytemuck = { version = "1.19", features = ["derive"] }
 egui = "0.33.3"
 egui-wgpu = "0.33.3"
 egui-sdl2-event = "1.33.3"
+
+[dev-dependencies]
+png = "0.18"

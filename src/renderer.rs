@@ -526,11 +526,7 @@ impl Renderer {
     fn letterboxed_viewport(&self) -> (f32, f32, f32, f32) {
         let (sw, sh) = (self.config.width as f32, self.config.height as f32);
         let (iw, ih) = (self.screen_width as f32, self.screen_height as f32);
-        if self.crt_enabled {
-            crt_viewport(sw, sh, iw, ih, self.crt_settings.pixels_per_scanline)
-        } else {
-            letterboxed_viewport(sw, sh, iw, ih)
-        }
+        letterboxed_viewport(sw, sh, iw, ih)
     }
 
     /// Envoie une trame à l'écran : un buffer RGBA8 (4 octets par pixel,
@@ -691,38 +687,143 @@ fn letterboxed_viewport(surf_w: f32, surf_h: f32, img_w: f32, img_h: f32) -> (f3
     ((surf_w - vp_w) / 2.0, (surf_h - vp_h) / 2.0, vp_w, vp_h)
 }
 
-/// Comme `letterboxed_viewport`, à une échelle qui donne un nombre ENTIER
-/// de pixels de sortie par ligne de balayage (`pixels_per_scanline` pixels
-/// source) : chaque ligne et son interligne tombent sur des rangées
-/// entières, l'interligne reste noir (un creux d'un pixel à cheval sur deux
-/// rangées s'affiche gris). Coordonnées arrondies au pixel ; au moins 2
-/// pixels par ligne quand la place le permet.
-fn crt_viewport(surf_w: f32, surf_h: f32, img_w: f32, img_h: f32, pixels_per_scanline: f32) -> (f32, f32, f32, f32) {
-    let fit = (surf_w / img_w).min(surf_h / img_h);
-    let rows = (fit * pixels_per_scanline).floor().max(1.0);
-    let scale = rows / pixels_per_scanline;
-    if scale <= 0.0 || !scale.is_finite() {
-        return letterboxed_viewport(surf_w, surf_h, img_w, img_h);
+/// Rendu hors écran du shader CRT (sans fenêtre ni surface), pour régler le
+/// shader et en tester le placement : `rgba` (`sw`×`sh`, RGBA8) dessiné
+/// dans une cible `w`×`h` comme le ferait `present_rgba` avec le shader
+/// actif (même shader, mêmes paramètres, même échantillonneur au plus
+/// proche). Renvoie les pixels RGBA8 de la cible.
+pub fn crt_shot(rgba: &[u8], sw: usize, sh: usize, w: u32, h: u32, settings: CrtSettings) -> Vec<u8> {
+    let instance = wgpu::Instance::default();
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).expect("adaptateur");
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("device");
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let src = device.create_texture_with_data(
+        &queue,
+        &wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width: sw as u32, height: sh as u32, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        },
+        wgpu::util::TextureDataOrder::LayerMajor,
+        rgba,
+    );
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        mag_filter: wgpu::FilterMode::Nearest,
+        min_filter: wgpu::FilterMode::Nearest,
+        ..Default::default()
+    });
+    let frame_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: None,
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+        ],
+    });
+    let params_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: None,
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+            count: None,
+        }],
+    });
+    let view = src.create_view(&Default::default());
+    let frame_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &frame_layout,
+        entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) }],
+    });
+    let params = CrtParams::new(settings, sw, sh);
+    let params_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::bytes_of(&params), usage: wgpu::BufferUsages::UNIFORM });
+    let params_bind = device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &params_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: params_buf.as_entire_binding() }] });
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(include_str!("renderer_crt.wgsl").into()) });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[&frame_layout, &params_layout], push_constant_ranges: &[] });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: None,
+        layout: Some(&layout),
+        vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_main"), buffers: &[], compilation_options: Default::default() },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleStrip, ..Default::default() },
+        depth_stencil: None,
+        multisample: Default::default(),
+        multiview: None,
+        cache: None,
+    });
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let tview = target.create_view(&Default::default());
+    let (x, y, vw, vh) = letterboxed_viewport(w as f32, h as f32, sw as f32, sh as f32);
+    let mut enc = device.create_command_encoder(&Default::default());
+    {
+        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &tview,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_viewport(x, y, vw, vh, 0.0, 1.0);
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &frame_bind, &[]);
+        pass.set_bind_group(1, &params_bind, &[]);
+        pass.draw(0..4, 0..1);
     }
-    let (w, h) = (img_w * scale, img_h * scale);
-    (((surf_w - w) / 2.0).floor(), ((surf_h - h) / 2.0).floor(), w, h)
+    let row = (w * 4).div_ceil(256) * 256;
+    let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (row * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+    enc.copy_texture_to_buffer(
+        target.as_image_copy(),
+        wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: None } },
+        target.size(),
+    );
+    queue.submit([enc.finish()]);
+    let slice = buf.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |r| r.unwrap());
+    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    let data = slice.get_mapped_range();
+    let mut out = Vec::with_capacity((w * h * 4) as usize);
+    for yy in 0..h {
+        let s = (yy * row) as usize;
+        out.extend_from_slice(&data[s..s + (w * 4) as usize]);
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Mode CRT : un nombre entier de pixels de sortie par ligne de
-    /// balayage, dans la surface, centré.
-    #[test]
-    fn crt_viewport_has_whole_rows_per_scanline() {
-        for (sw, sh, pps) in [(1920.0, 1080.0, 2.0), (2560.0, 1440.0, 2.0), (1920.0, 1080.0, 4.5)] {
-            let (x, y, w, h) = crt_viewport(sw, sh, 800.0, 600.0, pps);
-            let per_line = h / 600.0 * pps;
-            assert!((per_line - per_line.round()).abs() < 1e-4, "{sw}x{sh} : {per_line}");
-            assert!(w <= sw && h <= sh && x >= 0.0 && y >= 0.0);
-        }
-    }
 
     /// x1/x2/x3 : la fenêtre est un multiple exact de l'image (800x600),
     /// donc pas de bandes du tout — comme aujourd'hui avec
