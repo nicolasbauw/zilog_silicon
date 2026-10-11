@@ -1,12 +1,3 @@
-// Révision (reprise de burnin-rubber-web) : lignes en bandes de largeur
-// réglable, interligne noir (`band`) — le profil cos^n précédent éclairait
-// toujours un peu l'interligne, gris sous un texte clair sur fond sombre ;
-// rangées de sortie rattachées chacune à une ligne de balayage, la dernière
-// de chaque ligne portant l'interligne, à toute échelle (voir `fs_main`) ;
-// contenu mélangé seulement à l'intérieur d'une ligne ; contraste de la
-// ligne préservé quand le boost sature (`fit`). `scanline_beam` porte la largeur
-// de la ligne (fraction du pas), `beam_bloom` la largeur ajoutée au blanc.
-
 // Shader CRT (F5, Plan V2.md jalon M4) : troisième réécriture.
 //
 // Les deux précédentes (assombrissement du pixel selon sa position dans son
@@ -196,15 +187,6 @@ fn average_scan_weight(dist_lines: f32, beam: f32, footprint: f32) -> f32 {
     return (a + b + c) / 3.0;
 }
 
-// Bande lumineuse d'une ligne de balayage : 1 au centre jusqu'à la demi-
-// largeur, bords adoucis sur `BAND_SOFT` (fraction du pas), 0 au-delà.
-const BAND_SOFT: f32 = 0.08;
-
-fn band(dist_lines: f32, width: f32) -> f32 {
-    let h = width * 0.5;
-    return 1.0 - smoothstep(h - BAND_SOFT, h + BAND_SOFT, abs(dist_lines));
-}
-
 // Échantillon horizontal (flou gaussien) d'une ligne de TAMPON exacte
 // (`row`, un index entier + 0.5 - un vrai centre de texel).
 fn sample_row(cont_x: f32, sigma: f32, row: f32) -> vec3<f32> {
@@ -281,28 +263,17 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // actif, quel que soit `scanline_strength` : un flou permanent
     // qu'aucun réglage ne pouvait compenser.
     let sigma = max(params.horizontal_blur, 0.03);
-    // Rangées de sortie rattachées aux lignes de balayage. `P` pixels de
-    // sortie par ligne, non entier en général (3,6 en plein écran 1080
-    // lignes) : la rangée m (centre m + 0,5, depuis le haut de l'image)
-    // appartient à la ligne k = floor((m + 0,5) / P), qui couvre les rangées
-    // r0..r1 (3 ou 4 selon l'endroit). Position de la rangée dans sa ligne :
-    // la dernière tombe sur la frontière avec la suivante (`dist` = 0,5),
-    // c'est elle qui porte l'interligne — toujours entre deux lignes, quelle
-    // que soit l'échelle : l'image garde sa taille, le shader s'adapte.
-    let out_per_src = 1.0 / fwidth(texel.y);
-    let pitch = params.line_height * out_per_src;
-    let m = floor(texel.y * out_per_src);
-    let k = floor((m + 0.5) / pitch);
-    let r0 = ceil(k * pitch - 0.5);
-    let r1 = ceil((k + 1.0) * pitch - 0.5);
-    let rows = max(r1 - r0, 1.0);
-    let dist0 = (m - r0 + 1.0) / rows - 0.5;
-    // Contenu : mélangé seulement à l'intérieur de la ligne k (une rangée
-    // de sortie à cheval sur deux lignes source prenait sinon de la lumière
-    // à la ligne voisine, et l'interligne semblait tomber dans la ligne).
-    let lo = k * params.line_height + 0.5;
-    let hi = max((k + 1.0) * params.line_height - 0.5, lo);
-    let color_source = sample_native(texel.x, clamp(texel.y, lo, hi), sigma);
+    let color_source = sample_native(texel.x, texel.y, sigma);
+
+    // Position verticale en VRAIES lignes de balayage, pas en lignes du
+    // tampon (voir `line_height`) : c'est la période à laquelle un vrai tube
+    // dessine ses scanlines.
+    let line_coord = texel.y / params.line_height;
+    // `fwidth` donne l'empreinte verticale d'un pixel de sortie, dans cette
+    // même unité — voir `average_scan_weight`.
+    let footprint = fwidth(line_coord);
+    let line0 = floor(line_coord - 0.5);
+    let dist0 = (line_coord - 0.5) - line0;
 
     // Largeur du faisceau selon la luminosité locale : sur un vrai tube, un
     // faisceau plus intense est physiquement plus large ("bloom" du spot),
@@ -319,21 +290,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // totalité de l'image (tout sauf les blancs francs) compterait comme
     // "sombre" et le bloom ne servirait presque jamais.
     let brightness = pow(clamp(luma, 0.0, 1.0), 1.0 / GAMMA_OUT);
-    // Ligne allumée de largeur `scanline_beam` (fraction du
-    // pas), plus épaisse si claire (`beam_bloom` : largeur ajoutée au
-    // blanc) ; hors de la bande, rien : l'interligne reste noir, quel que
-    // soit le contenu (le profil cos^n de bytebox éclairait toujours un peu
-    // le creux, gris sous les textes clairs sur fond sombre).
-    let width = min(params.scanline_beam + params.beam_bloom * brightness, 1.0);
+    let beam = params.scanline_beam * mix(1.0, params.beam_bloom, brightness);
 
     // `scan_factor` : multiplicateur de luminosité purement géométrique,
     // pic à 1.0 pile sur une vraie ligne de balayage, creusé entre deux -
     // voir `scan_weight`. Volontairement NON normalisé (la somme des deux
     // termes n'a pas à faire 1.0) : c'est cette absence de normalisation
     // qui creuse la bande sombre du balayage.
-    // Bande de la ligne k et de ses voisines (la rangée frontière reçoit
-    // le bord des deux).
-    let scan_factor = band(dist0, width) + band(dist0 - 1.0, width) + band(dist0 + 1.0, width);
+    let w0 = average_scan_weight(dist0, beam, footprint);
+    let w1 = average_scan_weight(dist0 - 1.0, beam, footprint);
+    let scan_factor = w0 + w1;
     let color_scanned = color_source * scan_factor;
     let color = mix(color_source, color_scanned, params.scanline_strength);
 
@@ -362,13 +328,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // bonne partie du contraste que scanline_beam/scanline_strength étaient
     // censés produire — augmenter ces deux réglages n'avait alors presque
     // plus d'effet visible une fois `to_display` et le boost appliqués.
-    // Contraste de la ligne préservé. Le boost faisait
-    // saturer le sommet d'une ligne claire (écrêté au blanc) mais pas son
-    // creux, d'où un interligne clair sous les textes blancs. Si le sommet
-    // dépasserait le blanc, tout le profil de la ligne est réduit d'autant.
-    let peak = color_source * params.bright_boost;
-    let over = max(max(peak.r, peak.g), peak.b);
-    let fit = select(1.0, 1.0 / over, over > 1.0);
-    let final_color = to_display(color * mask * params.bright_boost * fit);
+    let final_color = to_display(color * mask * params.bright_boost);
     return vec4<f32>(final_color, 1.0);
 }
