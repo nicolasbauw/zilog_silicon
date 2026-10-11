@@ -65,9 +65,11 @@ impl CrtParams {
             mask_cell_px: settings.mask_cell_px,
             mask_min: settings.mask_min,
             mask_strength: settings.mask_strength,
-            scanline_beam: settings.scanline_beam,
-            scanline_strength: settings.scanline_strength,
-            beam_bloom: settings.beam_bloom,
+            // Largeur de la ligne allumée (fraction du pas), force pleine :
+            // voir `band` dans le shader.
+            scanline_beam: 1.0 - 0.8 * settings.scanlines.clamp(0.0, 1.0),
+            scanline_strength: 1.0,
+            beam_bloom: settings.bloom,
             bright_boost: settings.bright_boost,
             horizontal_blur: settings.horizontal_blur,
             _padding: 0.0,
@@ -89,9 +91,13 @@ pub struct CrtSettings {
     pub mask_cell_px: f32,
     pub mask_min: f32,
     pub mask_strength: f32,
-    pub scanline_beam: f32,
-    pub scanline_strength: f32,
-    pub beam_bloom: f32,
+    /// Part sombre de l'interligne, de 0 (lignes jointives) à 1 (80 % du
+    /// pas) : la ligne allumée occupe 1 - 0,8 × `scanlines` du pas, rien
+    /// au-delà (interligne noir, voir `band` dans `renderer_crt.wgsl`).
+    pub scanlines: f32,
+    /// Largeur ajoutée à une ligne blanche (fraction du pas) : une ligne
+    /// claire s'épaissit, sans éclairer l'interligne.
+    pub bloom: f32,
     pub bright_boost: f32,
     pub horizontal_blur: f32,
     /// How many buffer rows make up one real CRT scanline (`line_height`
@@ -122,9 +128,8 @@ impl Default for CrtSettings {
             mask_cell_px: 2.0,
             mask_min: 0.6,
             mask_strength: 0.35,
-            scanline_beam: 9.0,
-            scanline_strength: 0.5,
-            beam_bloom: 0.66,
+            scanlines: 0.2,
+            bloom: 0.08,
             bright_boost: 1.6,
             horizontal_blur: 0.65,
             // Neutral placeholder - every real consumer overrides this via
@@ -519,12 +524,13 @@ impl Renderer {
     /// ratio d'aspect — l'équivalent manuel de ce que faisait
     /// `Canvas::set_logical_size`.
     fn letterboxed_viewport(&self) -> (f32, f32, f32, f32) {
-        letterboxed_viewport(
-            self.config.width as f32,
-            self.config.height as f32,
-            self.screen_width as f32,
-            self.screen_height as f32,
-        )
+        let (sw, sh) = (self.config.width as f32, self.config.height as f32);
+        let (iw, ih) = (self.screen_width as f32, self.screen_height as f32);
+        if self.crt_enabled {
+            crt_viewport(sw, sh, iw, ih, self.crt_settings.pixels_per_scanline)
+        } else {
+            letterboxed_viewport(sw, sh, iw, ih)
+        }
     }
 
     /// Envoie une trame à l'écran : un buffer RGBA8 (4 octets par pixel,
@@ -685,9 +691,38 @@ fn letterboxed_viewport(surf_w: f32, surf_h: f32, img_w: f32, img_h: f32) -> (f3
     ((surf_w - vp_w) / 2.0, (surf_h - vp_h) / 2.0, vp_w, vp_h)
 }
 
+/// Comme `letterboxed_viewport`, à une échelle qui donne un nombre ENTIER
+/// de pixels de sortie par ligne de balayage (`pixels_per_scanline` pixels
+/// source) : chaque ligne et son interligne tombent sur des rangées
+/// entières, l'interligne reste noir (un creux d'un pixel à cheval sur deux
+/// rangées s'affiche gris). Coordonnées arrondies au pixel ; au moins 2
+/// pixels par ligne quand la place le permet.
+fn crt_viewport(surf_w: f32, surf_h: f32, img_w: f32, img_h: f32, pixels_per_scanline: f32) -> (f32, f32, f32, f32) {
+    let fit = (surf_w / img_w).min(surf_h / img_h);
+    let rows = (fit * pixels_per_scanline).floor().max(1.0);
+    let scale = rows / pixels_per_scanline;
+    if scale <= 0.0 || !scale.is_finite() {
+        return letterboxed_viewport(surf_w, surf_h, img_w, img_h);
+    }
+    let (w, h) = (img_w * scale, img_h * scale);
+    (((surf_w - w) / 2.0).floor(), ((surf_h - h) / 2.0).floor(), w, h)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Mode CRT : un nombre entier de pixels de sortie par ligne de
+    /// balayage, dans la surface, centré.
+    #[test]
+    fn crt_viewport_has_whole_rows_per_scanline() {
+        for (sw, sh, pps) in [(1920.0, 1080.0, 2.0), (2560.0, 1440.0, 2.0), (1920.0, 1080.0, 4.5)] {
+            let (x, y, w, h) = crt_viewport(sw, sh, 800.0, 600.0, pps);
+            let per_line = h / 600.0 * pps;
+            assert!((per_line - per_line.round()).abs() < 1e-4, "{sw}x{sh} : {per_line}");
+            assert!(w <= sw && h <= sh && x >= 0.0 && y >= 0.0);
+        }
+    }
 
     /// x1/x2/x3 : la fenêtre est un multiple exact de l'image (800x600),
     /// donc pas de bandes du tout — comme aujourd'hui avec
